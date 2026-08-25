@@ -307,9 +307,7 @@ function usage() {
   echo "  --vlm-model-type               nim or openai (when --use-remote-vlm)"
   echo "  --llm-env-file                 Path to LLM env file"
   echo "  --vlm-env-file                 Path to VLM env file"
-  echo "  --use-sbsa-images              Use SBSA-tagged image variants (e.g. RTVI CV) from commented lines in .env"
-  echo "                                   • Enabled automatically for -H DGX-SPARK"
-  echo "                                   • Use with -H OTHER on GB300/Spark-class hosts that need SBSA images"
+  echo "  --use-sbsa-images              Use SBSA-tagged managed image variants."
   echo ""
   echo "Options for 'up' and 'down':"
   echo "  -n, --dry-run                    Print commands without executing them"
@@ -330,18 +328,6 @@ function contains_element() {
   return 1
 }
 
-# Swap non-SBSA image tag lines for commented *sbsa* variants in generated.env (DGX-SPARK or --use-sbsa-images).
-function apply_sbsa_image_tags_to_env() {
-  local _generated_env="${1}"
-  local _reason="${2}"
-  local _key
-  while IFS= read -r _key; do
-    [[ -z "${_key}" ]] && continue
-    sed -i -E "/sbsa/! s/^(${_key})=(.*)/# \1=\2/" "${_generated_env}"
-    sed -i -E "/sbsa/ s/^#[[:space:]]*(${_key})=(.*)/\1=\2/" "${_generated_env}"
-    echo "[INFO] Swapped to SBSA (${_reason}): ${_key}"
-  done < <(grep -E '^#[[:space:]]*[A-Za-z0-9_]+=.*sbsa' "${_generated_env}" 2>/dev/null | sed -nE 's/^#[[:space:]]*([A-Za-z0-9_]+)=.*/\1/p' | sort -u)
-}
 
 function validate_args() {
   local _args _valid_args _all_good
@@ -706,12 +692,8 @@ function print_args() {
     if [[ "${deployment}" == "warehouse" ]] && [[ -n "${hardware_profile}" ]]; then
       echo "hardware-profile:          ${hardware_profile}"
     fi
-    if [[ "${hardware_profile}" == "DGX-SPARK" ]] || [[ "${use_sbsa_images}" == "true" ]]; then
-      if [[ "${hardware_profile}" == "DGX-SPARK" ]]; then
-        echo "use-sbsa-images:           true (DGX-SPARK)"
-      else
-        echo "use-sbsa-images:           true (--use-sbsa-images)"
-      fi
+    if [[ "${use_sbsa_images}" == "true" ]]; then
+      echo "use-sbsa-images:           true"
     fi
     if [[ "${mode}" == "2d" ]] && [[ "${deployment}" == "warehouse" ]] && [[ "${bp_profile}" == "bp_wh" ]]; then
       [[ -n "${llm}" ]] && echo "llm:                       ${llm}"
@@ -961,11 +943,6 @@ function state_up() {
     set_env_var "COMPOSE_PROFILES" "\${${_cp_var}}"
   fi
 
-  if [[ "${hardware_profile}" == "DGX-SPARK" ]]; then
-    apply_sbsa_image_tags_to_env "${_generated_env}" "DGX-SPARK"
-  elif [[ "${use_sbsa_images}" == "true" ]]; then
-    apply_sbsa_image_tags_to_env "${_generated_env}" "${hardware_profile:-OTHER} (--use-sbsa-images)"
-  fi
 
   echo "[INFO] Generated environment file: ${_generated_env}"
 
@@ -1002,6 +979,11 @@ function state_up() {
   local _compose_file_args=(-f compose.yml -f services/infra/compose-no-turn-tcp-relay.yml)
   local _compose_file_args_text=" ${_compose_file_args[*]}"
   echo "[INFO] TURN TCP relay host-port publishing disabled for blueprint-deploy.sh"
+
+  if [[ "${hardware_profile}" == "DGX-SPARK" || "${hardware_profile}" == "GB300" || "${use_sbsa_images}" == "true" ]]; then
+    export VSS_CONTAINER_TAG_SUFFIX="-sbsa"
+    echo "[INFO] Managed container tag suffix: ${VSS_CONTAINER_TAG_SUFFIX}"
+  fi
 
   # Resolve and display the managed container channel before deployment.
   set -a

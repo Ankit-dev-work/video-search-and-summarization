@@ -25,6 +25,7 @@ profile=""
 deployment_directory="${repo_root}/deploy/docker"
 data_directory="${deployment_directory}/data-dir"
 hardware_profile=""
+use_sbsa_images="false"
 host_ip="$(ip route get 1.1.1.1 | awk '/src/ {for (i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')"
 external_ip=""
 mode=""
@@ -561,6 +562,7 @@ function usage() {
   echo "  --vlm-env-file                   Path to VLM env file. Absolute or relative to CWD."
   echo "                                   • Not allowed when --use-remote-vlm is passed"
   echo "                                   • Not accepted for profile=alerts or base on IGX-THOR or AGX-THOR"
+  echo "  --use-sbsa-images                Use SBSA-tagged managed image variants."
   echo ""
   echo "Options for 'up' and 'down':"
   echo "  -d, --dry-run                    print commands without executing them"
@@ -585,7 +587,7 @@ function validate_args() {
   _args=("${@}")
   _all_good=0
 
-  _valid_args=$(getopt -q -o p:H:i:e:m:dh --long profile:,hardware-profile:,host-ip:,external-ip:,mode:,llm-device-id:,vlm-device-id:,use-remote-llm,use-remote-vlm,llm:,vlm:,llm-model-type:,vlm-model-type:,llm-env-file:,vlm-env-file:,dry-run,help -- "${_args[@]}")
+  _valid_args=$(getopt -q -o p:H:i:e:m:dh --long profile:,hardware-profile:,host-ip:,external-ip:,mode:,llm-device-id:,vlm-device-id:,use-remote-llm,use-remote-vlm,llm:,vlm:,llm-model-type:,vlm-model-type:,llm-env-file:,vlm-env-file:,use-sbsa-images,dry-run,help -- "${_args[@]}")
   if [[ $? -ne 0 ]]; then
     echo "[ERROR] Invalid usage: $(mask_external_ip_args "${_args[@]}")"
     ((_all_good++))
@@ -626,7 +628,7 @@ function process_args() {
   _args=("${@}")
   _all_good=0
 
-  _valid_args=$(getopt -q -o p:H:i:e:m:dh --long profile:,hardware-profile:,host-ip:,external-ip:,mode:,llm-device-id:,vlm-device-id:,use-remote-llm,use-remote-vlm,llm:,vlm:,llm-model-type:,vlm-model-type:,llm-env-file:,vlm-env-file:,dry-run,help -- "${_args[@]}")
+  _valid_args=$(getopt -q -o p:H:i:e:m:dh --long profile:,hardware-profile:,host-ip:,external-ip:,mode:,llm-device-id:,vlm-device-id:,use-remote-llm,use-remote-vlm,llm:,vlm:,llm-model-type:,vlm-model-type:,llm-env-file:,vlm-env-file:,use-sbsa-images,dry-run,help -- "${_args[@]}")
   eval set -- "${_valid_args}"
 
   # Parse options
@@ -718,6 +720,11 @@ function process_args() {
         shift
         vlm_env_file="${1}"
         options_provided+=("vlm-env-file")
+        shift
+        ;;
+      --use-sbsa-images)
+        use_sbsa_images="true"
+        options_provided+=("use-sbsa-images")
         shift
         ;;
       -d | --dry-run)
@@ -1154,6 +1161,9 @@ function print_args() {
     local _vlm_mode="${vlm_mode:-$(get_env_value_from_files "VLM_MODE" "${_env_file}" "${_overrides_env_file}")}"
 
     echo "hardware-profile:          ${hardware_profile:-$(get_env_value_from_files "HARDWARE_PROFILE" "${_env_file}" "${_overrides_env_file}")}"
+    if [[ "${use_sbsa_images}" == "true" ]]; then
+      echo "use-sbsa-images:          true"
+    fi
     if [[ "${profile}" == "alerts" ]]; then
       echo "mode:                      ${mode:-$(get_mode_display_value "$(get_env_value_from_files "MODE" "${_env_file}" "${_overrides_env_file}")")}"
     fi
@@ -1564,28 +1574,6 @@ function state_up() {
     esac
   fi
 
-  # ARM64 GPU systems use explicit SBSA image tags where profiles provide them.
-  # This includes DGX-SPARK and GB300 (Grace Blackwell), whose generic image
-  # manifests do not include the required DeepStream/Tegra runtime libraries.
-  if [[ "${hardware_profile}" == "DGX-SPARK" || "${hardware_profile}" == "GB300" ]]; then
-    local _key
-    while IFS= read -r _key; do
-      [[ -z "${_key}" ]] && continue
-      # Comment the uncommented line for this key when value does not contain sbsa
-      sed -i -E "/sbsa/! s/^(${_key})=(.*)/# \1=\2/" "${_generated_env}"
-      # Uncomment the commented line for this key when value contains sbsa
-      sed -i -E "/sbsa/ s/^#[[:space:]]*(${_key})=(.*)/\1=\2/" "${_generated_env}"
-      echo "[INFO] Swapped to SBSA (DGX-SPARK): ${_key}"
-    done < <(grep -E '^#[[:space:]]*[A-Za-z0-9_]+=.*sbsa' "${_generated_env}" 2>/dev/null | sed -nE 's/^#[[:space:]]*([A-Za-z0-9_]+)=.*/\1/p' | sort -u)
-  fi
-  # LVS keeps RTVI_VLM_IMAGE_TAG in its static .env, so write the ARM64
-  # override into generated.env where it wins during Compose interpolation.
-  if [[ "${hardware_profile}" == "GB300" ]]; then
-    set_env_var "RTVI_VLM_IMAGE_TAG" "3.3.0-26.08.2-sbsa"
-    echo "[INFO] Selected SBSA RT-VLM image for GB300"
-  fi
-
-
   echo "[INFO] Generated environment file: ${_generated_env}"
 
   # Create required directories
@@ -1645,6 +1633,11 @@ function state_up() {
   if [[ "${dry_run}" != "true" ]]; then
     echo "[INFO] Applying VSS Linux kernel settings..."
     set_vss_linux_kernel_settings
+  fi
+
+  if [[ "${hardware_profile}" == "DGX-SPARK" || "${hardware_profile}" == "GB300" || "${use_sbsa_images}" == "true" ]]; then
+    export VSS_CONTAINER_TAG_SUFFIX="-sbsa"
+    echo "[INFO] Managed container tag suffix: ${VSS_CONTAINER_TAG_SUFFIX}"
   fi
 
   # Resolve and display the managed container channel before deployment.

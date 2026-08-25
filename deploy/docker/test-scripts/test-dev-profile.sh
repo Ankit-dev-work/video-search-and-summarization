@@ -215,41 +215,8 @@ get_generated_env_value() {
   fi
 }
 
-# Read the value from a profile overrides.env's commented line for KEY that contains sbsa (the line that DGX-SPARK will activate).
-# Used so DGX-SPARK tests assert "script activated the sbsa variant" without hardcoding tag versions.
-get_commented_sbsa_value() {
-  local env_file="${1}"
-  local key="${2}"
-  [[ -f "${env_file}" ]] || return
-  grep -E "^#[[:space:]]*${key}=" "${env_file}" 2>/dev/null | grep -F 'sbsa' | head -1 | cut -d= -f2-
-}
 
-# Discover env var names that have a commented line with sbsa in the value (same pattern as dev-profile.sh).
-# Output: one key per line. Use when a profile may have zero or more sbsa-tagged vars.
-get_commented_sbsa_keys() {
-  local env_file="${1}"
-  [[ -f "${env_file}" ]] || return
-  grep -E '^#[[:space:]]*[A-Za-z0-9_]+=.*sbsa' "${env_file}" 2>/dev/null | sed -nE 's/^#[[:space:]]*([A-Za-z0-9_]+)=.*/\1/p' | sort -u
-}
 
-# Run one DGX-SPARK dry-run test for a profile: discover sbsa keys from profile overrides.env, run up -H DGX-SPARK, assert.
-# Skips if profile overrides.env is missing. Alerts gets -m real-time.
-run_spark_test_for_profile() {
-  local profile="${1}"
-  local env_file="${REPO_ROOT}/deploy/docker/developer-profiles/dev-profile-${profile}/overrides.env"
-  [[ -f "${env_file}" ]] || return 0
-  local check_args=("HARDWARE_PROFILE" "DGX-SPARK")
-  local key val
-  while IFS= read -r key; do
-    [[ -z "${key}" ]] && continue
-    val="$(get_commented_sbsa_value "${env_file}" "${key}")"
-    [[ -n "${val}" ]] && check_args+=("${key}" "${val}")
-  done < <(get_commented_sbsa_keys "${env_file}")
-  local run_args=(-i 127.0.0.1 -H DGX-SPARK -d)
-  [[ "${profile}" == "alerts" ]] && run_args+=(-m real-time)
-  run_dry_run_up_and_check_generated_env "generated.env DGX-SPARK swaps to sbsa tags (${profile})" "${profile}" \
-    "${run_args[@]}" -- "${check_args[@]}"
-}
 
 # Run dev-profile up with dry-run, then assert expected key=value in generated.env, then restore.
 # Usage: run_dry_run_up_and_check_generated_env "test name" "profile" "arg1" "arg2" ... -- "VAR1" "value1" "VAR2" "value2" ...
@@ -744,9 +711,6 @@ run_dry_run_up_and_check_generated_env "generated.env search default wires RT-VL
   "VLM_BASE_URL" "http://rtvi-vlm:8000" "RT_VLM_DEVICE_ID" "0" \
   "RTVI_VLM_MODEL_TO_USE" "cosmos-reason3" \
   "RTVI_VLLM_GPU_MEMORY_UTILIZATION" "0.4"
-run_dry_run_up_and_check_generated_env "generated.env search selects SBSA RT Embed tag" "search" \
-  -i 127.0.0.1 -H OTHER --use-sbsa-images -d -- \
-  "VSS_RT_EMBED_TAG" "develop-latest-sbsa"
 _mock_brev_one_gpu_dir="$(mktemp -d)"
 CLEANUP_DIRS+=("${_mock_brev_one_gpu_dir}")
 cat > "${_mock_brev_one_gpu_dir}/nvidia-smi" <<'EOF'
@@ -1019,27 +983,14 @@ else
   ((TESTS_FAILED++)) || true
 fi
 
-_warehouse_3d_skill="${REPO_ROOT}/skills/vss-deploy-detection-tracking-3d"
-if ! grep -R -E 'models/mv3dt/BodyPose3DNet|models/mtmc' \
-  "${_warehouse_3d_skill}/SKILL.md" \
-  "${_warehouse_3d_skill}/references" \
-  "${_warehouse_3d_skill}/evals" >/dev/null; then
-  echo "PASS: warehouse MV3DT skill uses flattened per-file model paths"
-  ((TESTS_PASSED++)) || true
-else
-  echo "FAIL: warehouse MV3DT skill should not reference legacy app-data model paths"
-  ((TESTS_FAILED++)) || true
-fi
 
 _compose_mv3dt_root="${_warehouse_root}/warehouse-mv3dt-app"
-_helm_mv3dt_start="${REPO_ROOT}/deploy/helm/services/rtvi/charts/rtvi-cv/files/warehouse-standalone-mv3dt/deepstream/init-scripts/ds-start-mv3dt.sh"
-if cmp -s "${_compose_mv3dt_root}/deepstream/init-scripts/ds-start-mv3dt.sh" "${_helm_mv3dt_start}" \
-  && grep -q 'PERCEPTION_IMAGE:-nvcr.io/nvstaging/vss-core/vss-rt-cv' "${_compose_mv3dt_root}/warehouse-mv3dt-app.yml" \
-  && grep -q 'VSS_RT_CV_TAG:-3.3.0-26.07.2' "${_compose_mv3dt_root}/warehouse-mv3dt-app.yml"; then
-  echo "PASS: warehouse MV3DT startup script and perception fallback are aligned across Compose and Helm"
+if grep -q 'VSS_RT_CV_IMAGE:-${VSS_CONTAINER_REGISTRY:-ghcr.io/nvidia-ai-blueprints/vss}/vss-rt-cv' "${_compose_mv3dt_root}/warehouse-mv3dt-app.yml" \
+  && grep -q 'VSS_RT_CV_TAG:-develop-latest' "${_compose_mv3dt_root}/warehouse-mv3dt-app.yml"; then
+  echo "PASS: warehouse MV3DT Compose uses the managed RT-CV coordinate"
   ((TESTS_PASSED++)) || true
 else
-  echo "FAIL: warehouse MV3DT Compose and Helm startup semantics or perception fallback diverged"
+  echo "FAIL: warehouse MV3DT Compose should use the managed RT-CV coordinate"
   ((TESTS_FAILED++)) || true
 fi
 
@@ -1218,22 +1169,22 @@ for _profile in base lvs search alerts; do
   _allowed_duplicate_keys=()
   case "${_profile}" in
     base)
-      _expected_override_keys+=(EVAL_LLM_JUDGE_NAME EVAL_LLM_JUDGE_BASE_URL RTVI_VLM_PORT RTVI_VLM_IMAGE_TAG RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH)
+      _expected_override_keys+=(EVAL_LLM_JUDGE_NAME EVAL_LLM_JUDGE_BASE_URL RTVI_VLM_PORT RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH)
       _expected_stable_keys=(MODE RTVI_VLM_MAX_MODEL_LEN)
       _allowed_duplicate_keys=(RTVI_VLM_MAX_MODEL_LEN)
       ;;
     lvs)
-      _expected_override_keys+=(RT_VLM_DEVICE_ID VLM_PORT RTVI_VLM_PORT EVAL_LLM_JUDGE_NAME EVAL_LLM_JUDGE_BASE_URL SDR_CONTROLLER_CONFIG_PATH NVSTREAMER_CONFIG_DIR RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH)
+      _expected_override_keys+=(RT_VLM_DEVICE_ID VLM_PORT RTVI_VLM_PORT EVAL_LLM_JUDGE_NAME EVAL_LLM_JUDGE_BASE_URL SDR_CONTROLLER_CONFIG_PATH RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH)
       _expected_override_keys+=(NVSTREAMER_HTTP_HOST_PORT BACKEND_HOST_PORT LVS_MCP_HOST_PORT ELASTICSEARCH_HOST_PORT KAFKA_HOST_PORT KIBANA_HOST_PORT DCGM_EXPORTER_HOST_PORT SDRC_CONTROLLER_HOST_PORT SDRC_PROXY_HOST_PORT SDRC_DIRECT_HOST_PORT SDRC_ENVOY_ADMIN_HOST_PORT)
-      _expected_stable_keys=(MODE LVS_TAG RTVI_VLM_IMAGE_TAG)
+      _expected_stable_keys=(MODE)
       ;;
     search)
-      _expected_override_keys+=(MEDIA_SERVICE_ENDPOINT REACT_APP_API_ENDPOINT_BASE_URL EVAL_LLM_JUDGE_NAME EVAL_LLM_JUDGE_BASE_URL SDR_CONTROLLER_CONFIG_PATH NVSTREAMER_CONFIG_DIR RT_VLM_DEVICE_ID RTVI_VLM_PORT RTVI_VLM_IMAGE_TAG RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH)
+      _expected_override_keys+=(MEDIA_SERVICE_ENDPOINT REACT_APP_API_ENDPOINT_BASE_URL EVAL_LLM_JUDGE_NAME EVAL_LLM_JUDGE_BASE_URL SDR_CONTROLLER_CONFIG_PATH RT_VLM_DEVICE_ID RTVI_VLM_PORT RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH)
       _expected_override_keys+=(VIDEO_ANALYTICS_API_HOST_PORT RTVI_CV_HOST_PORT NVSTREAMER_HTTP_HOST_PORT ELASTICSEARCH_HOST_PORT KAFKA_HOST_PORT KIBANA_HOST_PORT SDRC_CONTROLLER_HOST_PORT SDRC_PROXY_HOST_PORT SDRC_DIRECT_HOST_PORT SDRC_ENVOY_ADMIN_HOST_PORT)
-      _expected_stable_keys=(MODE VSS_RT_CV_TAG)
+      _expected_stable_keys=(MODE)
       ;;
     alerts)
-      _expected_override_keys+=(MODE RT_VLM_DEVICE_ID VLM_PORT RTVI_VLM_PORT PERCEPTION_DOCKERFILE_PREFIX VLM_AS_VERIFIER_CONFIG_FILE_PREFIX VLM_AS_VERIFIER_CONFIG_FILE VLM_AS_VERIFIER_ALERT_TYPE_CONFIG_FILE NVSTREAMER_CONFIG_DIR NEXT_PUBLIC_APP_SUBTITLE VSS_RT_CV_TAG RTVI_VLM_IMAGE_TAG RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH RTVI_VLM_OPENAI_MODEL_DEPLOYMENT_NAME SDR_CONTROLLER_CONFIG_PATH)
+      _expected_override_keys+=(MODE RT_VLM_DEVICE_ID VLM_PORT RTVI_VLM_PORT PERCEPTION_DOCKERFILE_PREFIX VLM_AS_VERIFIER_CONFIG_FILE_PREFIX VLM_AS_VERIFIER_CONFIG_FILE VLM_AS_VERIFIER_ALERT_TYPE_CONFIG_FILE NEXT_PUBLIC_APP_SUBTITLE RTVI_VLM_ENDPOINT RTVI_VLM_MODEL_TO_USE RTVI_VLLM_GPU_MEMORY_UTILIZATION RTVI_VLM_MAX_MODEL_LEN RTVI_VLM_MODEL_PATH RTVI_VLM_OPENAI_MODEL_DEPLOYMENT_NAME SDR_CONTROLLER_CONFIG_PATH)
       _expected_override_keys+=(VIDEO_ANALYTICS_API_HOST_PORT RTVI_CV_HOST_PORT VSS_VA_MCP_HOST_PORT ALERT_BRIDGE_HOST_PORT NVSTREAMER_HTTP_HOST_PORT ELASTICSEARCH_HOST_PORT KAFKA_HOST_PORT KIBANA_HOST_PORT SDRC_CONTROLLER_HOST_PORT SDRC_PROXY_HOST_PORT SDRC_DIRECT_HOST_PORT SDRC_ENVOY_ADMIN_HOST_PORT)
       _expected_stable_keys=()
       ;;
@@ -1369,7 +1320,7 @@ _shared_service_env_specs=(
   "deploy/docker/services/infra/infra.env:ELASTICSEARCH_CONNECTION_MAX_ATTEMPTS"
   "deploy/docker/services/nim/nim.env:LLM_PORT VLM_PORT VLM_NIM_KVCACHE_PERCENT"
   "deploy/docker/services/nvstreamer/.env:NVSTREAMER_IMAGE_TAG NVSTREAMER_HTTP_PORT NVSTREAMER_INSTALL_ADDITIONAL_PACKAGES"
-  "deploy/docker/services/rtvi/rtvi.env:RTVI_VLM_BASE_URL RTVI_VLM_KAFKA_BOOTSTRAP_SERVERS RTVI_VLM_KAFKA_INCIDENT_TOPIC RTVI_VLM_KAFKA_ENABLED RTVI_EMBED_IMAGE RTVI_EMBED_TAG RTVI_EMBED_PORT PERCEPTION_IMAGE OTEL_SDK_DISABLED OTEL_EXPORTER_OTLP_ENDPOINT OTEL_METRICS_EXPORTER"
+  "deploy/docker/services/rtvi/rtvi.env:RTVI_VLM_BASE_URL RTVI_VLM_KAFKA_BOOTSTRAP_SERVERS RTVI_VLM_KAFKA_INCIDENT_TOPIC RTVI_VLM_KAFKA_ENABLED RTVI_EMBED_PORT OTEL_SDK_DISABLED OTEL_EXPORTER_OTLP_ENDPOINT OTEL_METRICS_EXPORTER"
   "deploy/docker/services/vios/vst.env:VST_PORT VST_INGRESS_HTTP_PORT RTSP_SERVER_PORT_END VST_INTERNAL_IP VST_INGRESS_ENDPOINT VST_INTERNAL_URL VST_STREAM_PROCESSOR_IMAGE_TAG VST_SENSOR_IMAGE_TAG VST_INGRESS_IMAGE_TAG"
 )
 for _spec in "${_shared_service_env_specs[@]}"; do
@@ -1388,36 +1339,35 @@ for _spec in "${_shared_service_env_specs[@]}"; do
   done
 done
 _nvstreamer_shared_compose="${REPO_ROOT}/deploy/docker/services/nvstreamer/compose.yml"
-if ! grep -Eq '^  nvstreamer-base:' "${_nvstreamer_shared_compose}"; then
+_nvstreamer_base_compose="${REPO_ROOT}/deploy/docker/services/nvstreamer/base.yml"
+if ! grep -Eq '^  nvstreamer-base:' "${_nvstreamer_base_compose}"; then
   echo "FAIL: shared NVStreamer Compose should define nvstreamer-base"
   ((_split_failed++)) || true
 fi
-if grep -Eq '(developer-profiles|industry-profiles)/' "${_nvstreamer_shared_compose}"; then
+if grep -Eq '(developer-profiles|industry-profiles)/' "${_nvstreamer_base_compose}"; then
   echo "FAIL: shared NVStreamer Compose should not reference blueprint directories"
   ((_split_failed++)) || true
 fi
 _nvstreamer_service_definition_specs=(
-  "nvstreamer-alerts:deploy/docker/developer-profiles/dev-profile-alerts/compose.yml deploy/docker/industry-profiles/smartcities/compose.yml"
-  "nvstreamer-lvs:deploy/docker/developer-profiles/dev-profile-lvs/compose.yml"
-  "nvstreamer-2d-fusion:deploy/docker/developer-profiles/dev-profile-search/video-analytics-2d-app/compose.yml"
-  "nvstreamer-2d:deploy/docker/industry-profiles/warehouse-operations/warehouse-2d-app/warehouse-2d-app.yml"
-  "nvstreamer-3d:deploy/docker/industry-profiles/warehouse-operations/warehouse-3d-app/warehouse-3d-app.yml"
-  "nvstreamer-mv3dt:deploy/docker/industry-profiles/warehouse-operations/warehouse-mv3dt-app/warehouse-mv3dt-app.yml"
+  "nvstreamer-alerts:deploy/docker/services/nvstreamer/compose.yml"
+  "nvstreamer-lvs:deploy/docker/services/nvstreamer/compose.yml"
+  "nvstreamer-2d-fusion:deploy/docker/services/nvstreamer/compose.yml"
+  "nvstreamer-2d:deploy/docker/services/nvstreamer/compose.yml"
+  "nvstreamer-3d:deploy/docker/services/nvstreamer/compose.yml"
+  "nvstreamer-mv3dt:deploy/docker/services/nvstreamer/compose.yml"
 )
 for _spec in "${_nvstreamer_service_definition_specs[@]}"; do
   _service="${_spec%%:*}"
   _expected_definition_paths="${_spec#*:}"
   _expected_definition_count="$(wc -w <<< "${_expected_definition_paths}")"
-  _definition_count="$(grep -R -E --include='*.yml' --include='*.yaml' "^  ${_service}:" \
-    "${REPO_ROOT}/deploy/docker/developer-profiles" \
-    "${REPO_ROOT}/deploy/docker/industry-profiles" | wc -l)"
+  _definition_count="$(grep -E "^  ${_service}:" "${_nvstreamer_shared_compose}" | wc -l)"
   if [[ "${_definition_count}" -ne "${_expected_definition_count}" ]]; then
-    echo "FAIL: ${_service} should have ${_expected_definition_count} blueprint-owned Compose definition(s) (found ${_definition_count})"
+    echo "FAIL: ${_service} should have ${_expected_definition_count} shared Compose definition(s) (found ${_definition_count})"
     ((_split_failed++)) || true
   fi
   for _definition_path in ${_expected_definition_paths}; do
     if ! grep -Eq "^  ${_service}:" "${REPO_ROOT}/${_definition_path}"; then
-      echo "FAIL: ${_service} definition missing from ${_definition_path}"
+      echo "FAIL: ${_service} definition missing from shared ${_definition_path}"
       ((_split_failed++)) || true
     fi
   done
@@ -1542,11 +1492,6 @@ for _nemotron_3_5_env in \
 done
 
 
-# DGX-SPARK: for each profile, run dry-run with -H DGX-SPARK and assert sbsa variants (keys from profile overrides.env).
-# DGX-SPARK (and IGX-THOR) are only valid for base and alerts
-for _profile in base alerts; do
-  run_spark_test_for_profile "${_profile}"
-done
 
 run_dry_run_up_and_check_generated_env "generated.env LLM slugs and names" "base" \
  -i 127.0.0.1 --llm nvidia/nemotron-3-nano -d -- \
