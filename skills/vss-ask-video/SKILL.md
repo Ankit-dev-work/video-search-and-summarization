@@ -1,6 +1,6 @@
 ---
 name: vss-ask-video
-description: Use this skill to ask a fresh visual question about a recorded video clip by calling a VLM endpoint directly (OpenAI-compatible chat/completions), including a user-confirmed vss-search-archive handoff with a pre-resolved bounded VIDEO_URL. Not for retrieval or metadata-answerable questions.
+description: Use this skill to answer a question about a recorded video, first from an OpenClaw-loaded unified-memory document when present, then from its authoritative VSS record, and only then through direct visual VLM introspection. Also handles fresh visual questions with a supplied video or sensor. Not for archive search or report generation.
 license: Apache-2.0
 metadata:
   version: "3.2.0"
@@ -55,8 +55,8 @@ it, or you pass `VLM_ENDPOINT` / `VLM_MODEL` yourself.
 
 Do **not** use this skill when the request is one of the following:
 
-- A **database / MCP / prior tool output** already answers the question, unless
-  the user explicitly wants fresh visual verification. The confirmed bounded
+- A **database / MCP / prior tool output** already answers the question, unless this is the
+  unified-memory route below or the user explicitly wants fresh visual verification. The confirmed bounded
   `vss-search-archive` handoff above is the only search-result exception; use
   `/vss-query-analytics` for analytics-result verification.
 - Archive/semantic similarity retrieval ("find forklifts", "search all videos for tailgating")
@@ -71,6 +71,41 @@ Do **not** use this skill when the request is one of the following:
 ---
 
 ## Instructions
+
+### Unified-memory route
+
+Use this route when the question starts with `Regarding video <video-id> in memory` or OpenClaw has already loaded a VSS job-memory Markdown document for the conversation.
+
+1. Let OpenClaw's native memory search handle the request. Do not run a separate filename search or assume a document named after the video. Use the job-memory document OpenClaw loaded into context and require an exact `videos[].video_id` match.
+2. Read that document's `authoritative_record_id` and the matching video's `vios_sensor`. If its summary is sufficient, answer from it.
+3. If the summary is insufficient, retrieve the full record into this task's `$TMPDIR`:
+   ```bash
+   VSS_REPO_ROOT="${VSS_REPO_ROOT:-$HOME/video-search-and-summarization}"
+   uv run --project "$VSS_REPO_ROOT/services/agent" --no-dev --extra cli \
+     python ~/.openclaw/skills/vss-ask-video/scripts/memory_access/get.py \
+     --record-id '<authoritative_record_id>' \
+     --output "$TMPDIR/authoritative-memory.json" \
+     --es-endpoint '<deployed-memory-elasticsearch-endpoint>' \
+     --memory-index '<deployed-memory-index>'
+   ```
+   If the full record is sufficient, answer from it.
+4. Only if the full record is still insufficient, pass that exact file to visual introspection:
+   ```bash
+   uv run --project "$VSS_REPO_ROOT/services/agent" --no-dev --extra cli \
+     python ~/.openclaw/skills/vss-ask-video/scripts/memory_access/introspect.py \
+     --query '<the exact question>' \
+     --video-id '<video-id>' \
+     --vlm-endpoint '<live OpenAI-compatible VLM /v1 endpoint>' \
+     --vlm-model '<live model id>' \
+     < "$TMPDIR/authoritative-memory.json"
+   ```
+5. For a multiple-choice request, return only the selected option letter.
+
+`$TMPDIR` is the current Harbor task's private working directory. Use it for intermediate retrieval and introspection files; do not inspect another task's temporary directory.
+
+For this route, do not use a guessed `memory/vss/<video-id>.md` path. The Markdown filename is the job ID, and OpenClaw's native memory search selects candidate job documents before this skill runs.
+
+### Fresh visual route
 
 1. **Verify prerequisites** — a reachable VLM endpoint (the only hard requirement) and a
    video to ask about. No specific VSS profile is required, and VST/VIOS is optional
