@@ -7,6 +7,8 @@ description: Run the dataset-backed unified-memory video benchmark setup: deploy
 
 Follow the setup query exactly. This skill supplies deterministic setup scripts; it does not answer benchmark questions.
 
+Changes under this skill directory are evaluated by the `physical_ai_video_mme_v2` Skills Eval matrix leg.
+
 ## Video setup
 
 1. Download and extract the pinned NGC video fixture into `$TMPDIR/videos`:
