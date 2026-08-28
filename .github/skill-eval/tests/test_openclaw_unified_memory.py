@@ -70,20 +70,26 @@ def test_prediction_pipeline_preserves_complete_log(tmp_path) -> None:
     }
 
 
-def test_prediction_pipeline_preserves_quoted_multiline_response(tmp_path) -> None:
-    response = 'The answer is "B".\nSecond line.'
+def test_prediction_pipeline_extracts_trailing_choice_and_preserves_log(
+    tmp_path,
+) -> None:
+    response = 'The memory says "patterned shirt and jeans."\n\nB'
+    payload = {"payloads": [{"text": response}], "meta": {"status": "ok"}}
+    log_path = tmp_path / "openclaw.txt"
     prediction_path = tmp_path / "prediction-1.json"
     _run_prediction_pipeline(
-        {"payloads": [{"text": response}]},
+        payload,
         "video-1",
-        str(tmp_path / "openclaw.txt"),
+        str(log_path),
         str(tmp_path / "prediction-1.json.tmp"),
         str(prediction_path),
     )
 
-    assert (
-        json.loads(prediction_path.read_text(encoding="utf-8"))["response"] == response
-    )
+    assert json.loads(log_path.read_text(encoding="utf-8")) == payload
+    assert json.loads(prediction_path.read_text(encoding="utf-8")) == {
+        "case_id": "video-1",
+        "response": "B",
+    }
 
 
 def test_four_prediction_artifacts_are_numbered_in_order(tmp_path) -> None:
@@ -104,11 +110,13 @@ def test_four_prediction_artifacts_are_numbered_in_order(tmp_path) -> None:
     assert actual == expected
 
 
-def test_prediction_pipeline_rejects_missing_or_non_string_text(tmp_path) -> None:
+def test_prediction_pipeline_rejects_invalid_or_ambiguous_choices(tmp_path) -> None:
     for index, payload in enumerate(
         (
             {"payloads": []},
             {"payloads": [{"text": 2}]},
+            {"payloads": [{"text": "The answer is B."}]},
+            {"payloads": [{"text": "A B"}]},
         ),
         1,
     ):

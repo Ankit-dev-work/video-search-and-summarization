@@ -16,11 +16,17 @@ from harbor.models.agent.context import AgentContext
 GROUP_PREFIX = "<!-- unified-memory-group\n"
 GROUP_SUFFIX = "\n-->"
 PREDICTION_JQ_FILTER = r"""
-{
-  case_id: $case_id,
-  response: .payloads[0].text
-}
-| select(.response | type == "string")
+.payloads[0].text
+| select(type == "string")
+| split("\n")
+| map(gsub("^\\s+|\\s+$"; ""))
+| map(select(length > 0))
+| last
+| select(type == "string" and test("^[A-H]$"))
+| {
+    case_id: $case_id,
+    response: .
+  }
 """
 
 
