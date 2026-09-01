@@ -317,6 +317,59 @@ class TestRunPostUploadProcessing:
         assert "embeddings generated" in result.message
 
     @pytest.mark.asyncio
+    async def test_rtvi_cv_and_embed_receive_internal_vst_url(self):
+        """Both RTVI-CV and RTVI-Embed must receive the VST storage URL
+        rewritten to the internal VST endpoint, not the raw (potentially
+        external/proxy) ``videoUrl`` returned by VST storage. Regression
+        guard for in-cluster RTVI-CV failing to fetch clips when the VST
+        ingress endpoint is an external host unreachable from the pod.
+        """
+        from vss_agents.utils.url_translation import rewrite_url_host
+
+        raw_video_url = "http://vst.example-nip.io/vst/storage/temp_files/clip.mp4"
+        vst_internal = "http://vst-internal:30888"
+        expected = rewrite_url_host(raw_video_url, "vst-internal")
+
+        storage_resp = self._mock_response(200, {"videoUrl": raw_video_url})
+        cv_resp = self._mock_response(200, {"ok": True})
+        embed_resp = self._mock_response(200, {"usage": {"total_chunks_processed": 7}})
+
+        posted: dict[str, dict] = {}
+
+        def _dispatch(url, *args, **kwargs):
+            if "/api/v1/stream/add" in url:
+                posted["cv"] = kwargs.get("json")
+                return cv_resp
+            if "/v1/generate_video_embeddings" in url:
+                posted["embed"] = kwargs.get("json")
+                return embed_resp
+            raise AssertionError(f"unexpected POST URL: {url}")
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.get = AsyncMock(return_value=storage_resp)
+        client.post = AsyncMock(side_effect=_dispatch)
+
+        with self._timeline_patch(), patch("vss_agents.api.video_ingest.httpx.AsyncClient", return_value=client):
+            await _run_post_upload_processing(
+                camera_name="clip",
+                sensor_id="sensor-abc",
+                filename="clip.mp4",
+                vst_url=vst_internal,
+                rtvi_embed_base_url="http://rtvi-embed:8017",
+                rtvi_cv_base_url="http://rtvi-cv:9000",
+            )
+
+        # RTVI-CV camera_url must be the internal endpoint, not the raw proxy URL.
+        assert posted["cv"]["value"]["camera_url"] == expected
+        # RTVI-Embed must likewise receive the internal endpoint.
+        assert posted["embed"]["url"] == expected
+        # Neither consumer should carry the raw external host.
+        assert "example-nip.io" not in posted["cv"]["value"]["camera_url"]
+        assert "example-nip.io" not in posted["embed"]["url"]
+
+    @pytest.mark.asyncio
     async def test_rtvi_cv_unreachable_is_skipped_not_fatal(self):
         import httpx
 
