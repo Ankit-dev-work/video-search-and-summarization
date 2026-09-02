@@ -109,7 +109,7 @@ this workflow:
 
 ```bash
 : "${VSS_PUBLIC_CANDIDATE:?deployment-minted public HTTPS origin}"
-: "${VSS_HOST_ORIGIN:?host-reachable HAProxy origin}"
+: "${VSS_HOST_ORIGIN:?HAProxy origin reachable from the host AND from service containers - use the host IP, not localhost}"
 ORIGIN_SELECTOR="${VSS_REPO_ROOT}/skills/operations/vss-search-archive/scripts/select_brev_origin.sh"
 test -x "${ORIGIN_SELECTOR}" || exit 1
 ORIGIN_SELECTION=$("${ORIGIN_SELECTOR}" \
@@ -120,8 +120,20 @@ VSS_MEDIA_SCOPE=$(printf '%s' "${ORIGIN_SELECTION}" |
   jq -er '.media_scope | select(. == "public" or . == "host-local")') || exit 1
 if [ "${VSS_MEDIA_SCOPE}" = host-local ]; then
   echo "Public VST probe failed semantic validation; CLI media URLs will be host-local" >&2
+  case "${VSS_ORIGIN}" in
+    *//localhost*|*//127.*|*//\[::1\]*)
+      echo "VSS_ORIGIN is loopback: the VLM container cannot fetch media URLs minted from it" >&2
+      ;;
+  esac
 fi
 ```
+
+`VSS_HOST_ORIGIN` has to be reachable from service containers, not only from
+this shell. Media URLs are minted from the recorded origin and then fetched by
+the VLM container during result verification, and RT-VLM rejects a loopback
+host as an SSRF target, so `http://localhost:7777` ingests and searches
+correctly while making clip verification impossible. Pass the host IP HAProxy
+already allowlists instead.
 
 Never assemble a Brev hostname from guesswork: the documented
 `7777-<BREV_ENV_ID>.<BREV_LINK_DOMAIN>` form, built only from values read out

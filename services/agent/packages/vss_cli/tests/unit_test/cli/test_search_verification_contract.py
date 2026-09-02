@@ -277,6 +277,15 @@ def test_source_lifecycle_uses_current_configure_contract() -> None:
     assert "Never rewrite a media URL returned in a search result" in prose
     assert "Post the bytes to the re-anchored `UPLOAD_URL`" in prose
 
+    # Service containers consume the recorded origin too: RT-VLM fetches the
+    # clip URLs minted from it and refuses a loopback host as an SSRF target, so
+    # a `localhost` host origin ingests and searches while making result
+    # verification impossible. Keep the requirement on the variable the agent
+    # supplies, since nothing in the repo publishes it for us.
+    assert "reachable from the host AND from service containers" in lifecycle
+    assert "Pass the host IP HAProxy already allowlists instead" in prose
+    assert "the VLM container cannot fetch media URLs minted from it" in lifecycle
+
 
 def test_public_probe_rejects_redirects_and_accepts_vst_json(tmp_path: Path) -> None:
     selector = SEARCH_SKILL / "scripts/select_brev_origin.sh"
@@ -397,6 +406,41 @@ printf '%s' "${{UPLOAD_URL}}"
 """
     completed = subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
     assert completed.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("origin", "warns"),
+    [
+        # The origin that produced the failure: host-reachable, but the VLM
+        # container resolves it to itself and RT-VLM refuses loopback as SSRF.
+        ("http://localhost:7777", True),
+        ("http://127.0.0.1:7777", True),
+        ("http://[::1]:7777", True),
+        # Routable host addresses reach both the host and the containers.
+        ("http://10.0.0.5:7777", False),
+        ("http://192.168.1.20:7777", False),
+        ("https://7777-env.brevlab.com", False),
+    ],
+)
+def test_host_local_origin_warns_only_when_it_is_loopback(origin: str, warns: bool) -> None:
+    """A host-local origin is workable; a loopback one silently breaks result
+    verification. Run the warning block the agent actually reads so a doc edit
+    that drops the distinction fails here."""
+    lifecycle = (SEARCH_SKILL / "references/source_lifecycle.md").read_text(encoding="utf-8")
+    match = re.search(
+        r'(if \[ "\$\{VSS_MEDIA_SCOPE\}" = host-local \]; then\n.*?\nfi)',
+        lifecycle,
+        flags=re.DOTALL,
+    )
+    assert match is not None, "the host-local warning block is missing from source_lifecycle.md"
+
+    script = f"""set -u
+VSS_MEDIA_SCOPE=host-local
+VSS_ORIGIN={shlex.quote(origin)}
+{match.group(1)}
+"""
+    completed = subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
+    assert ("loopback" in completed.stderr) is warns
 
 
 def test_setup_recipes_cannot_reset_or_bypass_global_deadline() -> None:
