@@ -374,6 +374,7 @@ export default function Home({ alertsData, searchData, dashboardData, mapData, v
     handleSidebarChatVideoUploadComplete,
     handleSidebarAnswerComplete,
     handleSidebarAnswerCompleteWithContent,
+    handleMainChatAnswerCompleteWithContent,
     handleSidebarSubmitMessageReady,
     handleSidebarMessageSubmitted,
   } = useChatSidebarMainTabBridge({
@@ -648,6 +649,7 @@ export default function Home({ alertsData, searchData, dashboardData, mapData, v
               isActive={isActive}
               renderControlsInLeftSidebar={true}
               renderApplicationHead={false}
+              onAnswerCompleteWithContent={handleMainChatAnswerCompleteWithContent}
               onControlsReady={(isActive ? chatControlsReadyCallback : undefined) as any}
             />
           </div>

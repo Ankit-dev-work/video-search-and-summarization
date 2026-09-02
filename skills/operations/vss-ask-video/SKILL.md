@@ -111,6 +111,13 @@ Resolve public endpoints once when operating against a deployed VSS stack. Follo
 if [ -z "${VSS_PUBLIC_URL:-}" ] && [ -n "${VSS_ENDPOINT:-}" ]; then
   VSS_PUBLIC_URL="${VSS_ENDPOINT}"
 fi
+VSS_CAPABILITY_RECEIPT="${HOME}/.vss/agent-capabilities.json"
+if [ -z "${VSS_PUBLIC_URL:-}" ] && [ -f "$VSS_CAPABILITY_RECEIPT" ]; then
+  VSS_RECEIPT_ORIGIN=$(jq -er \
+    '(.vss_origin // "") | select(type == "string")' \
+    "$VSS_CAPABILITY_RECEIPT") || exit 1
+  [ -z "$VSS_RECEIPT_ORIGIN" ] || VSS_PUBLIC_URL="$VSS_RECEIPT_ORIGIN"
+fi
 
 if [ -n "${VSS_PUBLIC_URL:-}" ]; then
   DEPLOYMENT_KIND="kubernetes"
@@ -127,6 +134,12 @@ No VIOS URL is built here. `vss configure` records the deployment once and every
 
 ```bash
 # The CLI lives in the VSS checkout; --extra cli is what installs it.
+VSS_CAPABILITY_RECEIPT="${HOME}/.vss/agent-capabilities.json"
+if [ -z "${VSS_REPO_ROOT:-}" ] && [ -f "$VSS_CAPABILITY_RECEIPT" ]; then
+  VSS_REPO_ROOT=$(jq -er \
+    '.runtime.repo_root | select(type == "string" and length > 0)' \
+    "$VSS_CAPABILITY_RECEIPT") || exit 1
+fi
 VSS_REPO_ROOT="${VSS_REPO_ROOT:-$HOME/video-search-and-summarization}"
 [ -f "${VSS_REPO_ROOT}/services/agent/pyproject.toml" ] || {
   echo "VSS checkout not found at ${VSS_REPO_ROOT}; set VSS_REPO_ROOT" >&2; exit 1; }
