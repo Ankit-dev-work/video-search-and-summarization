@@ -231,8 +231,10 @@ the path that matches how the video was provided. Also capture the clip length i
 
 If the user hands you a file path or a URL, use it directly — **VST/VIOS is not involved**:
 
-- **Local file** → set `VIDEO_FILE=/path/to/clip.mp4`. Step 3 inlines it as a base64 video block
-  (`file_base64`) so the VLM ingests the video directly. Nothing is downloaded.
+- **Local file** → set `VIDEO_FILE=/path/to/clip.mp4`. Step 3 must inline the complete MP4 as a
+  `data:video/mp4;base64,...` video block (`file_base64`), never extracted JPEG/image blocks, so
+  the VLM performs temporal sampling. Include the backend-specific frame-count field from Step 3;
+  for RT-VLM this is a non-zero `num_frames_per_second_or_fixed_frames_chunk`. Nothing is downloaded.
 - **URL the VLM can fetch** → set `VIDEO_URL=<url>`. Step 3 sends it as a `video_url` block; if the
   VLM is remote and can't reach the URL, inline it instead (`file_base64`).
 
