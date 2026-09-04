@@ -4,159 +4,125 @@ description: ""
 position: 1
 ---
 
-This guide explains how to deploy **AutoMagicCalib (AMC) as a VSS service**. It uses the VSS Docker Compose deployment and pre-built `vss-auto-calibration` and `vss-auto-calibration-ui` containers. It is not the standalone DeepStream `tools/auto-magic-calib` setup.
+This guide explains how to deploy and access the **AutoMagicCalib Microservice and User Interface as part of VSS**.
 
-AMC is a separate VSS microservice and UI. The VSS agent, NIMs, VST, and RTVI services are not required for standalone AMC deployment. The warehouse auto-calibration profile can additionally connect AMC to VIOS/VST for RTSP capture.
+The detailed AMC workflow, input requirements, rectification, alignment, results, and troubleshooting content is documented in the [AMC Workflow Steps](/vss/system-components/calibration/auto-calibration/workflow-steps), [Custom Dataset](/vss/system-components/calibration/auto-calibration/custom-dataset), and [Troubleshooting](/vss/system-components/calibration/auto-calibration/troubleshooting) pages. These pages follow the canonical [DeepStream AutoMagicCalib README](https://gitlab-master.nvidia.com/DeepStreamSDK/deepstream/-/blob/main/tools/auto-magic-calib/README.md?ref_type=heads), including its screenshots and UI guidance.
 
 ## Prerequisites
 
-- x86_64 host running Ubuntu 24.04
-- NVIDIA GPU with NVENC hardware encoding
+Before using the VSS AutoMagicCalib service and UI, ensure you have:
+
+- x86_64 system
+- Ubuntu 24.04
+- NVIDIA GPU with hardware encoder (NVENC)
 - NVIDIA Driver 590 or newer
-- Docker configured for non-root use
+- Docker configured to run without `sudo`
 - NVIDIA Container Toolkit
-- NGC CLI and an NGC API key with access to the AMC image namespace
-- A checkout of the [VSS repository](https://github.com/NVIDIA-AI-Blueprints/video-search-and-summarization)
+- An NGC API key with access to the required VSS images
 
-AMC calibration requires a supported x86_64 NVIDIA GPU host. If calibration is not being run on this host, use an existing calibration artifact or run calibration on a supported host and transfer the result.
+Required calibration inputs and the detailed AMC requirements are documented in [Custom Dataset](/vss/system-components/calibration/auto-calibration/custom-dataset).
 
-## VSS Deployment
+## VSS Deployment Steps (Docker Compose)
 
-The VSS AMC deployment is managed from `deploy/docker` and uses the Warehouse Operations environment layers:
+These steps deploy AMC using the VSS repository's auto-calibration service. They are separate from the standalone DeepStream `tools/auto-magic-calib` deployment.
 
-- `industry-profiles/warehouse-operations/.env` — checked-in service defaults
-- `industry-profiles/warehouse-operations/overrides.env` — runtime override template
-- `industry-profiles/warehouse-operations/generated.env` — active host-specific values
-
-Set `VSS_APPS_DIR` to the absolute path of the repository's `deploy/docker` directory. Set `VSS_DATA_DIR` to a separate runtime data directory.
-
-### Initialize the runtime environment
-
-```bash
-cd /path/to/video-search-and-summarization/deploy/docker
-cp industry-profiles/warehouse-operations/overrides.env \
-   industry-profiles/warehouse-operations/generated.env
-
-# Edit generated.env and set these values:
-# HOST_IP=<reachable host IP>
-# VSS_APPS_DIR=/absolute/path/to/video-search-and-summarization/deploy/docker
-# VSS_DATA_DIR=/absolute/path/to/vss-data
-# VSS_AUTO_CALIBRATION_HOST_PORT=8010
-# VSS_AUTO_CALIBRATION_UI_HOST_PORT=5000
-# COMPOSE_PROFILES=vss-auto-calibration,vss-auto-calibration-ui
-```
-
-`HOST_IP` must be reachable from the browser. Do not use `localhost` or `0.0.0.0` for this value.
-
-### Authenticate with NGC
+### 1. Authenticate with NGC
 
 ```bash
 export NGC_CLI_API_KEY=<NGC_CLI_API_KEY>
-printenv NGC_CLI_API_KEY | docker login nvcr.io \
-  --username '$oauthtoken' --password-stdin
+export NGC_CLI_ORG='nvidia'
+docker login nvcr.io -u '$oauthtoken' -p "${NGC_CLI_API_KEY}"
 ```
 
-Never print or commit the API key.
+Generate an API key from [NGC Setup](https://org.ngc.nvidia.com/setup) if needed. Do not print or commit the key.
 
-### Optional VGGT setup
-
-AMC works without VGGT. To enable independent VGGT calibration, download the licensed `vggt_1B_commercial.pt` model and place it at:
-
-```text
-${VSS_DATA_DIR}/auto-calib/vggt/vggt_1B_commercial.pt
-```
-
-Accept the model license and obtain the model from the [VGGT model page](https://huggingface.co/facebook/VGGT-1B-Commercial) before downloading it.
-
-### Optional RTSP setup
-
-RTSP calibration requires VIOS. If VIOS/VST is part of the same warehouse deployment, the warehouse profile wires `VIOS_BASE_URL` automatically. For an independently deployed VIOS instance, set `VIOS_BASE_URL` in `generated.env` to the reachable VIOS URL and verify it before starting AMC.
-
-### Review and start AMC
+### 2. Clone the VSS repository
 
 ```bash
-cd /path/to/video-search-and-summarization/deploy/docker
-
-set -a
-. industry-profiles/warehouse-operations/.env
-. industry-profiles/warehouse-operations/generated.env
-set +a
-
-docker compose \
-  --env-file industry-profiles/warehouse-operations/.env \
-  --env-file industry-profiles/warehouse-operations/generated.env \
-  config > resolved.yml
-
-# Review resolved.yml and confirm the AMC services and image references.
-docker compose \
-  --env-file industry-profiles/warehouse-operations/.env \
-  --env-file industry-profiles/warehouse-operations/generated.env \
-  up -d
+git clone https://github.com/NVIDIA-AI-Blueprints/video-search-and-summarization.git
+cd video-search-and-summarization
+git checkout tags/v3.2.1
 ```
 
-For warehouse RTSP auto-calibration, use the warehouse variant instead:
+### 3. Open the VSS AutoMagicCalib deployment directory
+
+```bash
+cd deploy/docker/services/auto-calibration
+```
+
+The directory contains:
+
+```text
+compose.yml
+ms/compose.yml
+ui/compose.yml
+```
+
+### 4. Configure the VSS environment
+
+Create `.env` in the current directory:
 
 ```dotenv
-MODE=auto-calibration
-BP_PROFILE=bp_wh_auto_calib
-COMPOSE_PROFILES=${COMPOSE_PROFILES_WH_AUTO_CALIB}
+VSS_AUTO_CALIBRATION_PORT=8000
+VSS_AUTO_CALIBRATION_UI_PORT=5000
+VSS_APPS_DIR=/path/to/video-search-and-summarization/deploy/docker
+VSS_DATA_DIR=/path/to/your/data_dir
+HOST_IP=<HOST_IP_ADDRESS>
+# VIOS_BASE_URL=http://<VIOS_HOST_IP>:30888
 ```
 
-Do not combine the standalone service list with the warehouse profile settings.
+Replace the paths and host address with your values. `HOST_IP` must be reachable from the browser.
 
-### Verify the deployment
+### 5. Optional VGGT model setup
+
+AMC works without VGGT. To enable VGGT calibration, download the licensed model from [Hugging Face](https://huggingface.co/facebook/VGGT-1B-Commercial) and place it in:
 
 ```bash
-PORT=${VSS_AUTO_CALIBRATION_HOST_PORT:-8010}
-UI_PORT=${VSS_AUTO_CALIBRATION_UI_HOST_PORT:-5000}
-
-curl "http://localhost:${PORT}/v1/ready"
-curl -I "http://localhost:${UI_PORT}/"
-docker ps --filter name=vss-auto-calibration
+mkdir -p "${VSS_DATA_DIR}/auto-calib/vggt"
+mv vggt_1B_commercial.pt "${VSS_DATA_DIR}/auto-calib/vggt/"
 ```
 
-Expected results include a ready AMC response and these containers:
+You must accept the model license before downloading it.
 
-- `vss-auto-calibration`
-- `vss-auto-calibration-ui`
+### 6. Prepare the projects directory
 
-Open the UI at:
+```bash
+mkdir -p "${VSS_APPS_DIR}/services/auto-calibration/projects"
+sudo chown -R 1000:1000 "${VSS_DATA_DIR}/auto-calib"
+sudo chown -R 1000:1000 "${VSS_APPS_DIR}/services/auto-calibration/projects"
+```
+
+AMC stores project data in the projects directory and the containers use UID/GID `1000`.
+
+### 7. Start the VSS AMC service and UI
+
+```bash
+docker compose --profile "auto_calib" up -d
+```
+
+The microservice is available at:
 
 ```text
-http://<HOST_IP>:<VSS_AUTO_CALIBRATION_UI_HOST_PORT>
+http://<HOST_IP>:<VSS_AUTO_CALIBRATION_PORT>
 ```
 
-### Ensure projects are writable
-
-AMC stores projects under:
+The UI is available at:
 
 ```text
-${VSS_APPS_DIR}/services/auto-calibration/projects
+http://<HOST_IP>:<VSS_AUTO_CALIBRATION_UI_PORT>
 ```
 
-The container runs as UID 1000. On a fresh checkout, ensure this directory is writable by that user before creating a project:
+With the example values, open `http://<HOST_IP>:5000`.
+
+### 8. Stop the service
 
 ```bash
-PROJECTS_DIR="${VSS_APPS_DIR}/services/auto-calibration/projects"
-mkdir -p "$PROJECTS_DIR"
-sudo setfacl -m u:1000:rwx "$PROJECTS_DIR"
+docker compose --profile "auto_calib" down
 ```
 
-Use a scoped ACL rather than `chmod -R 777`.
+## Next Steps
 
-### Stop AMC
-
-```bash
-docker compose \
-  --env-file industry-profiles/warehouse-operations/.env \
-  --env-file industry-profiles/warehouse-operations/generated.env \
-  down
-```
-
-## Calibration Workflow
-
-After deployment, follow the detailed [7-step AMC workflow](/vss/system-components/calibration/auto-calibration/workflow-steps), including video configuration, rectification, manual alignment, execution, results, and export.
-
-For dataset preparation, see [Custom Dataset](/vss/system-components/calibration/auto-calibration/custom-dataset). For failures, see [Troubleshooting](/vss/system-components/calibration/auto-calibration/troubleshooting).
-
-For agent-driven deployment and calibration, see the [Auto Calibration Agent Skill](/vss/vision-agent/agent-skills).
+- Follow the [AMC Workflow Steps](/vss/system-components/calibration/auto-calibration/workflow-steps) for the complete 7-step UI workflow and screenshots.
+- Follow [Custom Dataset](/vss/system-components/calibration/auto-calibration/custom-dataset) for input videos, alignment data, lens distortion, and ground-truth requirements.
+- Follow [Troubleshooting](/vss/system-components/calibration/auto-calibration/troubleshooting) for common deployment and calibration failures.
+- For agent-driven VSS deployment and calibration, see the [`vss-generate-video-calibration` skill](/vss/vision-agent/agent-skills).
